@@ -1,0 +1,60 @@
+name: Deploy to ECS using Github Actions
+
+on:
+    push:
+        branches:
+            - main
+
+jobs:
+    containerize-and-deploy:
+        name: build and deploy to ecs
+        runs-on: ubuntu-latest
+        steps: 
+            - name: clone repository into Github Actions Runner
+              uses: actions/checkout@v2
+            
+            - name: Configure AWS credential 
+              uses: aws-actions/configure-aws-credentials@v1
+              with:
+                aws-access-key-id: ${{ secrets.MY_ACCESS_KEY }}
+                aws-secret-access-key: ${{ secrets.MY_SECRET_KEY }}
+                aws-region: ${{ secrets.MY_REGION }}
+
+            - name: login into ECR repository
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+              with:
+                registry-type: public
+            
+            - name: build, tag, and push to AWS ECR repository
+              id: build-image
+              env: 
+                ECR_REGISTRY: public.ecr.aws
+                REGISTRY_ALIAS: r1m3y5z1
+                ECR_REPOSITORY: ecr-deploy
+                IMAGE_TAG: ${{ github.sha }}
+              run: |
+                docker build -t $ECR_REGISTRY/$REGISTRY_ALIAS/$ECR_REPOSITORY:$IMAGE_TAG .
+                docker push $ECR_REGISTRY/$REGISTRY_ALIAS/$ECR_REPOSITORY:$IMAGE_TAG
+                echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/$ECR_REPOSITORY:$IMAGE_TAG"
+
+            - name: Fill in the IMAGE ID into the task definition
+              id: task-def
+              env: 
+                ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+                REGISTRY_ALIAS: r1m3y5z1
+                ECR_REPOSITORY: ecr-deploy
+                IMAGE_TAG: ${{ github.sha }}
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                task-definition: task_definition.json
+                image: ${{ steps.build-image.outputs.image }}
+                container-name: test-image
+            
+            - name: deploy to ECS using newly updated task definition
+              uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+              with:
+                task-definition: ${{ steps.task-def.outputs.task-definition}}
+                service: php-svc
+                cluster: php-ecr-deploy
+                wait-for-service-stability: true
